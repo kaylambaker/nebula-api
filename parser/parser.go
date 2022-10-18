@@ -8,18 +8,17 @@ import (
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"parser/configs"
-	"path/filepath"
-	"reflect"
-
 	"os"
+	"path/filepath"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+
+	"parser/configs"
+	"parser/model"
 )
 
 type Class struct {
@@ -104,9 +103,8 @@ func csvToClassesSlice(csvFile *os.File, logFile *os.File) (classes []Class) {
 // inserts grades into mongodb
 func insertGrades(sectionsCollection *mongo.Collection, coursesCollection *mongo.Collection, classes []Class, academicSession string, logFile *os.File) {
 	for i := 0; i < len(classes); i++ {
-		var result bson.D
-		var err error
-		err = coursesCollection.FindOne(context.TODO(), bson.D{{"course_number", classes[i].catalogNumber}, {"subject_prefix", classes[i].subject}}).Decode(&result)
+		var courseSearchResult model.Course
+		err := coursesCollection.FindOne(context.TODO(), bson.D{{"course_number", classes[i].catalogNumber}, {"subject_prefix", classes[i].subject}}).Decode(&courseSearchResult)
 		// if class is not in courses section
 		if err != nil {
 			// log that class could not be found
@@ -114,25 +112,24 @@ func insertGrades(sectionsCollection *mongo.Collection, coursesCollection *mongo
 			fmt.Println("could not find course " + classes[i].subject + " " + classes[i].catalogNumber)
 			fmt.Println(err)
 		} else {
-			mymap := result.Map()
-			section_ids := reflect.ValueOf(mymap["sections"])
-			for j := 0; j < section_ids.Len(); j++ {
-				result = nil
-				idStr := fmt.Sprint(section_ids.Index(j).Elem())
-				idStr = strings.Split(idStr, "\"")[1]
-				idObj, _ := primitive.ObjectIDFromHex(idStr) // can't use id string, ahs to be object
-				err := sectionsCollection.FindOne(context.TODO(), bson.D{{"_id", idObj}}).Decode(&result)
+			/* for sections in course search result,
+			   check if section is right section and
+			   if right section put grade distribution
+			   into database */
+			for j := 0; j < len(courseSearchResult.Sections); j++ {
+				var sectionSearchResult model.Section
+				err := sectionsCollection.FindOne(context.TODO(), bson.D{{"_id", courseSearchResult.Sections[j]}}).Decode(&sectionSearchResult)
 				if err != nil {
 					fmt.Println(err)
+					logFile.WriteString(err.Error() + "\n")
 					continue
 				}
-				academicSessionE := result.Map()["academic_session"].(primitive.D)[0] // so i can access academic_session.name
 				// if right section and academic session insert grade distribution and exit j loop
-				if result.Map()["section_number"] == classes[i].section && academicSessionE.Value == academicSession {
-					_, err := sectionsCollection.UpdateOne(context.TODO(), bson.M{"_id": idObj}, bson.D{{"$set", bson.D{{"grade_distribution", classes[i].gradeDistribution}}}})
+				if sectionSearchResult.SectionNumber == classes[i].section && sectionSearchResult.Session.Name == academicSession {
+					_, err := sectionsCollection.UpdateOne(context.TODO(), bson.M{"_id": sectionSearchResult.ID}, bson.D{{"$set", bson.D{{"grade_distribution", classes[i].gradeDistribution}}}})
 					if err != nil {
-						logFile.WriteString("could not modify " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ", object id " + idStr + "\n")
-						fmt.Println(err)
+						logFile.WriteString("could not modify " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ", object id " + sectionSearchResult.ID.String() + err.Error() + "\n")
+						fmt.Println("could not modify " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ", object id " + sectionSearchResult.ID.String() + err.Error() + "\n")
 					} else {
 						fmt.Println("added " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + " grade distribution")
 					}
@@ -147,15 +144,9 @@ func insertGrades(sectionsCollection *mongo.Collection, coursesCollection *mongo
 
 func main() {
 	URI := configs.EnvMongoURI()
-	helpMsg := "usage: \ngo run parser.go -file [file_path] -semester [academic_session]\nexamples: \ngo run parser.go -file \"Fall 2019.csv\" -semester 19F\ngo run parser.go -file \"Summer 2019.csv\" -semester 19U"
 	fileFlag := flag.String("file", "", "csv grade file to be parsed")
-	semesterFlag := flag.String("semester", "", "semester of the grades")
-	helpFlag := flag.Bool("help", false, "if user needs help")
+	semesterFlag := flag.String("semester", "", "semester of the grades, ex: 18U, 19F")
 	flag.Parse()
-	if *helpFlag == true || *fileFlag == "" || *semesterFlag == "" {
-		fmt.Println(helpMsg)
-		os.Exit(1)
-	}
 	csvPath := *fileFlag
 	academicSession := *semesterFlag
 	csvFile, err := os.Open(csvPath)
