@@ -35,8 +35,13 @@ func CourseSearch() gin.HandlerFunc {
 			query[key] = c.Query(key)
 		}
 
+		optionLimit, err := configs.GetOptionLimit(&query, c); if err != nil {
+			c.JSON(http.StatusConflict, responses.CourseResponse{Status: http.StatusConflict, Message: "Error offset is not type integer", Data: err.Error()})
+			return
+		}
+
 		// get cursor for query results
-		cursor, err := courseCollection.Find(ctx, query)
+		cursor, err := courseCollection.Find(ctx, query, optionLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, responses.CourseResponse{Status: http.StatusInternalServerError, Message: "error", Data: err.Error()})
 			return

@@ -36,8 +36,13 @@ func ProfessorSearch() gin.HandlerFunc {
 			query[key] = c.Query(key)
 		}
 
+		optionLimit, err := configs.GetOptionLimit(&query, c); if err != nil {
+			c.JSON(http.StatusConflict, responses.ProfessorResponse{Status: http.StatusConflict, Message: "Error offset is not type integer", Data: err.Error()})
+			return
+		}
+
 		// get cursor for query results
-		cursor, err := professorCollection.Find(ctx, query)
+		cursor, err := professorCollection.Find(ctx, query, optionLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, responses.ProfessorResponse{Status: http.StatusInternalServerError, Message: "error", Data: err.Error()})
 			return
