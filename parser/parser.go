@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
@@ -108,37 +110,78 @@ func insertGrades(sectionsCollection *mongo.Collection, coursesCollection *mongo
 		// if class is not in courses section
 		if err != nil {
 			// log that class could not be found
-			logFile.WriteString("could not find course " + classes[i].subject + " " + classes[i].catalogNumber + "\n")
-			fmt.Println("could not find course " + classes[i].subject + " " + classes[i].catalogNumber)
-			fmt.Println(err)
-		} else {
-			/* for sections in course search result,
-			   check if section is right section and
-			   if right section put grade distribution
-			   into database */
-			for j := 0; j < len(courseSearchResult.Sections); j++ {
-				var sectionSearchResult model.Section
-				err := sectionsCollection.FindOne(context.TODO(), bson.D{{"_id", courseSearchResult.Sections[j]}}).Decode(&sectionSearchResult)
-				if err != nil {
-					fmt.Println(err)
-					logFile.WriteString(err.Error() + "\n")
-					continue
-				}
-				// if right section and academic session insert grade distribution and exit j loop
-				if sectionSearchResult.SectionNumber == classes[i].section && sectionSearchResult.Session.Name == academicSession {
-					_, err := sectionsCollection.UpdateOne(context.TODO(), bson.M{"_id": sectionSearchResult.ID}, bson.D{{"$set", bson.D{{"grade_distribution", classes[i].gradeDistribution}}}})
-					if err != nil {
-						logFile.WriteString("could not modify " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ", object id " + sectionSearchResult.ID.String() + err.Error() + "\n")
-						fmt.Println("could not modify " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ", object id " + sectionSearchResult.ID.String() + err.Error() + "\n")
-					} else {
-						fmt.Println("added " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + " grade distribution")
-					}
-					break
-				} else {
-					continue
-				}
-			}
+			logFile.WriteString("could not find course " + classes[i].subject + " " + classes[i].catalogNumber + ": " + err.Error() + "\n")
+			fmt.Println("could not find course " + classes[i].subject + " " + classes[i].catalogNumber + ": " + err.Error())
+			// fmt.Println(err)
+			continue
 		}
+		var data []bson.M
+		match :=
+			bson.D{
+				{"$match",
+					bson.D{
+						{"course_number", classes[i].catalogNumber},
+						{"subject_prefix", classes[i].subject},
+					},
+				},
+			}
+		lookup :=
+			bson.D{
+				{"$lookup",
+					bson.D{
+						{"from", "sections"},
+						{"localField", "sections"},
+						{"foreignField", "_id"},
+						{"as", "sections"},
+					},
+				},
+			}
+		unwind := bson.D{{"$unwind", bson.D{{"path", "$sections"}}}}
+		matchSectionNo :=
+			bson.D{
+				{"$match",
+					bson.D{
+						{"sections.section_number", classes[i].section},
+						{"sections.academic_session.name", academicSession},
+					},
+				},
+			}
+		project := bson.D{{"$project", bson.D{{"section", "$sections"}}}}
+		set :=
+			bson.D{
+				{"$set",
+					bson.D{
+						{"section.grade_distribution", classes[i].gradeDistribution},
+					},
+				},
+			}
+		cursor, err := coursesCollection.Aggregate(context.TODO(), mongo.Pipeline{match, lookup, unwind, matchSectionNo, project, set})
+		if err != nil {
+			logFile.WriteString(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": " + err.Error() + "\n")
+			fmt.Println(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": " + err.Error())
+			continue
+		}
+		err = cursor.All(context.TODO(), &data) // put cursor data into []primitive.M
+		if err != nil {
+			logFile.WriteString(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": " + err.Error() + "\n")
+			fmt.Println(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": " + err.Error())
+			continue
+		}
+		// if more than 1 result, log error and continue
+		if len(data) != 1 {
+			logFile.WriteString(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": recieved results " + strconv.Itoa(len(data)) + " from aggregation, expected 1\n")
+			fmt.Println(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": recieved results " + strconv.Itoa(len(data)) + " from aggregation, expected 1")
+			continue
+		}
+		sectionID := (data[0]["section"].(primitive.M))["_id"].(primitive.ObjectID)
+		var gradeDistribution bson.A = data[0]["section"].(primitive.M)["grade_distribution"].(bson.A)
+		_, err = sectionsCollection.UpdateByID(context.TODO(), sectionID, bson.D{{"$set", bson.D{{"grade_distribution", gradeDistribution}}}})
+		if err != nil {
+			fmt.Println(classes[i].subject + " " + classes[i].catalogNumber + ": " + err.Error())
+			logFile.WriteString(classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section + ": " + err.Error() + "\n")
+			continue
+		}
+		fmt.Println("added " + classes[i].subject + " " + classes[i].catalogNumber + "." + classes[i].section)
 	}
 }
 
