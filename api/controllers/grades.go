@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -408,7 +407,6 @@ func GradesSearch() gin.HandlerFunc {
 		var cursor *mongo.Cursor
 		var err error
 
-		fmt.Println("representation: " + representation)
 		switch representation {
 		case "section":
 			cursor, err = coursesCollection.Aggregate(ctx, bySectionPipeline)
