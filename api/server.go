@@ -37,6 +37,7 @@ func main() {
 	routes.ExamRoute(router)
 	routes.SectionRoute(router)
 	routes.ProfessorRoute(router)
+	routes.GradesRoute(router)
 
 	//router.OPTIONS("*", CORSOptionsHandler())
 
